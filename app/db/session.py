@@ -10,6 +10,7 @@ Async SQLAlchemy session factory for the Policy & Risk Guardrails PoC.
     * engine: Async engine (create_async_engine)
     * async_session: sessionmaker producing AsyncSession instances
     * get_session(): FastAPI-friendly dependency
+    * get_db(): alias of get_session() for routers that expect get_db
 
 Notes:
 - pool_pre_ping=True to survive transient network hiccups (managed Postgres).
@@ -75,7 +76,7 @@ async_session = async_sessionmaker(
 
 
 # ----------------------------------------------------------------------
-# FastAPI dependency
+# FastAPI dependencies
 # ----------------------------------------------------------------------
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """
@@ -87,3 +88,7 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """
     async with async_session() as session:
         yield session
+
+
+# Backwards-compatible alias for routers that expect `get_db`
+get_db = get_session

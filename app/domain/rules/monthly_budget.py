@@ -2,27 +2,27 @@
 Rule: Monthly budget (MTD) per category
 
 Policy intent (PoC):
-- Each category can have a monthly spending limit per org (optionally per month in DB).
+- Each category can have a monthly spending limit per org.
 - When (MTD_spend + current_tx) > limit → warn the user and flag risk.
 
-Rulepack knobs (two sources for limit; DB takes precedence):
-1) DB table budgets_monthly (org_id, category_code, month_start, amount)  <-- primary
+Rulepack knobs (two sources for limit; DB takes precedence when implemented):
+1) DB table budgets_monthly (org_id, category_code, month_start, amount)  <-- future primary
 2) Rule pack fallback:
 {
   "budgets": {
-    "monthly_limits": { "Entertainment": 1500 }
+    "monthly_limits": { "ENTERTAINMENT": 3000 }
   }
 }
 
 Behavior:
 - If no limit found (DB or rulepack) → no-op.
-- Compute MTD from poc_transactions (PoC) and add current tx amount.
+- Compute MTD from history (via repos.mtd_spend; PoC stub returns 0) and add current tx amount.
 - If over limit → SOFT_BLOCK (PoC choice; change to HARD if you want),
   message explains remaining/overage, risk flag BUDGET_OVER.
 
 Implementation notes:
 - All money values are converted to Decimal for safe arithmetic.
-- If repos.resolve_budget / repos.mtd_spend are not implemented yet,
+- If repos.resolve_budget / repos.mtd_spend are not implemented or fail,
   this rule falls back gracefully (no RULE_ERROR).
 """
 
@@ -35,6 +35,10 @@ from typing import Any, Dict, Optional
 from app.models import PolicyMessage, RiskFlag, Severity
 from app.services.policy_engine import RuleOutcome
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _msg(code: str, text: str, severity: Severity = Severity.WARNING) -> PolicyMessage:
     return PolicyMessage(
@@ -62,42 +66,71 @@ def _to_decimal(value: Any) -> Optional[Decimal]:
         return None
 
 
+def _norm_cat(value: Optional[str]) -> Optional[str]:
+    """Normalize category code for case-insensitive comparisons."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    return s.lower()
+
+
 async def _resolve_limit(
-    org_id: str,
-    category: str,
-    tx_date,
+    tx,
     rulepack: Dict[str, Any],
     repos: Any,
 ) -> Optional[Decimal]:
     """
-    Resolve the monthly limit for (org_id, category, month).
+    Resolve the monthly limit for this transaction's category.
 
     Priority:
-      1) DB via repos.resolve_budget(org_id, category, tx_date)
-      2) rulepack.budgets.monthly_limits[category]
+      1) DB via repos.resolve_budget(tx=tx, rulepack=rulepack)
+         - Expected to return either:
+             - dict with {"limit": ...} (as in DBPolicyRepos), or
+             - a raw numeric (float/Decimal/int) in any custom impl
+      2) rulepack.budgets.monthly_limits[category] (case-insensitive)
 
     Returns Decimal or None if no usable limit.
     """
-    limit_db: Optional[Decimal] = None
+    category = getattr(tx, "category_code", None)
+    norm_cat = _norm_cat(category)
+    if not norm_cat:
+        return None
 
-    # --- DB-backed limit (if helper exists) ---
+    # --- 1) Try DB-backed resolve_budget, if present ---
     if hasattr(repos, "resolve_budget"):
         try:
-            res = repos.resolve_budget(org_id, category, tx_date)
+            res = repos.resolve_budget(tx=tx, rulepack=rulepack)
             if inspect.isawaitable(res):
                 res = await res
-            limit_db = _to_decimal(res)
+
+            # DBPolicyRepos returns a dict {"limit": ..., "actual": ..., ...}
+            if isinstance(res, dict):
+                limit_db = _to_decimal(res.get("limit"))
+            else:
+                # Custom implementations may just return a scalar
+                limit_db = _to_decimal(res)
+
+            if limit_db is not None:
+                return limit_db
         except Exception:
-            # For PoC: swallow and fall back to config
-            limit_db = None
+            # PoC: swallow and fall back to rulepack
+            pass
 
-    # --- Rulepack fallback ---
+    # --- 2) Rulepack fallback (case-insensitive keys) ---
     budgets_cfg = (rulepack.get("budgets") or {})
-    monthly_limits = (budgets_cfg.get("monthly_limits") or {})
-    limit_cfg = _to_decimal(monthly_limits.get(category))
+    monthly_limits_raw = (budgets_cfg.get("monthly_limits") or {})
 
-    # DB value wins if present and valid
-    return limit_db if limit_db is not None else limit_cfg
+    # Normalize keys to lowercase
+    monthly_limits_norm: Dict[str, Any] = {}
+    for k, v in monthly_limits_raw.items():
+        k_norm = _norm_cat(k)
+        if k_norm:
+            monthly_limits_norm[k_norm] = v
+
+    limit_cfg = _to_decimal(monthly_limits_norm.get(norm_cat))
+    return limit_cfg
 
 
 async def _get_mtd_spend(
@@ -111,6 +144,7 @@ async def _get_mtd_spend(
     Get month-to-date spend for this (org, user, category, month).
 
     If repos.mtd_spend is not implemented or fails, returns Decimal('0').
+
     Expected (but not enforced) signature if implemented:
 
         async def mtd_spend(org_id: str, user_id: str, category: str, tx_date: date) -> Decimal | float | None
@@ -132,20 +166,26 @@ async def _get_mtd_spend(
         return Decimal("0")
 
 
+# ---------------------------------------------------------------------------
+# Main rule
+# ---------------------------------------------------------------------------
+
 async def check(req, rulepack: Dict[str, Any], repos) -> Optional[RuleOutcome]:
     tx = req.tx
     org_id, user_id = req.org_id, req.user_id
-    category = tx.category_code
+    category = getattr(tx, "category_code", None)
 
-    # If we somehow don't have a date, we can't do MTD logic → no-op
+    # If we don't have a date, we can't do MTD logic → no-op
     if not getattr(tx, "date", None):
         return None
 
-    # 1) Resolve monthly limit (DB first, then rulepack fallback)
+    # If we don't have a category, we can't map to any limit → no-op
+    if not category:
+        return None
+
+    # 1) Resolve monthly limit (DB first via repos.resolve_budget, then rulepack fallback)
     limit = await _resolve_limit(
-        org_id=org_id,
-        category=category,
-        tx_date=tx.date,
+        tx=tx,
         rulepack=rulepack,
         repos=repos,
     )
@@ -162,7 +202,7 @@ async def check(req, rulepack: Dict[str, Any], repos) -> Optional[RuleOutcome]:
         repos=repos,
     )
 
-    amount = _to_decimal(tx.amount)
+    amount = _to_decimal(getattr(tx, "amount", None))
     if amount is None:
         # if amount is weird, let some other rule handle it; skip budget check
         return None
@@ -186,6 +226,11 @@ async def check(req, rulepack: Dict[str, Any], repos) -> Optional[RuleOutcome]:
     return RuleOutcome(
         status_delta="SOFT_BLOCK",  # PoC choice; flip to HARD_BLOCK if you want stricter behavior
         messages=[_msg("BUDGET_OVER", text)],
-        flags=[_flag("BUDGET_OVER", f"MTD {current_mtd:.2f} + tx {amount:.2f} > limit {limit:.2f}")],
+        flags=[
+            _flag(
+                "BUDGET_OVER",
+                f"MTD {current_mtd:.2f} + tx {amount:.2f} > limit {limit:.2f}",
+            )
+        ],
         hard_requirements=[],
     )

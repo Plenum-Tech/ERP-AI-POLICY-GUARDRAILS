@@ -11,48 +11,64 @@
   "holidays": {
     "policy": "flag"
   },
-  "holiday_dates": ["2025-12-01", "2025-12-02", "2025-12-03"],
+  "holiday_dates": [
+    "2025-12-01",
+    "2025-12-02",
+    "2025-12-03"
+  ],
 
   "weekend": {
     "enabled": true,
     "days": ["FRI", "SAT"],
-    "require_approval_for": ["Entertainment"]
+    "require_approval_for": ["ENTERTAINMENT"]
   },
 
   "caps": {
     "per_tx": {
-      "Entertainment": 1500
+      "ENTERTAINMENT": 1500
     },
     "per_tx_weekend": {
-      "Entertainment": 500
+      "ENTERTAINMENT": 500
     }
   },
 
   "budgets": {
     "monthly_limits": {
-      "Entertainment": 3000
+      "ENTERTAINMENT": 3000
     }
+  },
+
+  "duplicate_rules": {
+    "window_days": 14,
+    "same_amount_tolerance": 1.0,
+    "desc_fuzzy_threshold": 0.85,
+    "time_bucket_hours": 24
   },
 
   "mcc_rules": {
     "category_allowed_mcc": {
-      "Entertainment": ["5813", "7932", "7929"]
+      "ENTERTAINMENT": ["5813", "7932", "7929"]
     }
   },
 
   "fx_rules": {
     "max_deviation_pct": 5.0,
-    "tip_max_pct": 20.0
+    "tip_max_pct": 20.0,
+    "reference": {
+      "USD": 3.6725
+    }
   },
 
   "forex_card": {
     "enabled": true,
-    "allowed_categories": ["Taxi", "F&B"]
+    "allowed_categories": ["TAXI", "F&B"]
   },
 
   "travel": {
     "min_notice_working_days": 7,
-    "upgrades_require_approval": true
+    "upgrades_require_approval": true,
+    "soft_mode": false,
+    "upgrade_scope_categories": ["Travel", "Flight", "Hotel"]
   },
 
   "project_docs": {
@@ -63,7 +79,9 @@
   "receipts": {
     "enabled": true,
     "min_count": 1,
-    "hard_block": true
+    "hard_block": true,
+    "required_for_all": true,
+    "required_for_categories": ["ENTERTAINMENT", "TAXI"]
   },
 
   "risk_weights": {

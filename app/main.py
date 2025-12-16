@@ -14,11 +14,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.routers.policy import router as policy_router
+from app.routers import policy_config
+from app.routers import policy_override
+from app.routers import policy_audit
+
+
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Policy & Risk Guardrails (PoC)",
+        title="Policy & Risk Guardrails",
         version="0.1.0",
         docs_url="/docs",
         redoc_url="/redoc",
@@ -42,7 +47,10 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(policy_router)
-
+    app.include_router(policy_config.router)
+    app.include_router(policy_override.router)
+    app.include_router(policy_audit.router) 
+    
     # Health
     @app.get("/health", tags=["_system"])
     async def health():

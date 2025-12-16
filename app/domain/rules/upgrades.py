@@ -52,6 +52,7 @@ from app.services.policy_engine import RuleOutcome
 # ---------------------------------------------------------------------------
 
 def _cfg(rulepack: Dict[str, Any]) -> Dict[str, Any]:
+    """Safely extract the 'travel' config section."""
     return (rulepack.get("travel") or {}) if isinstance(rulepack, dict) else {}
 
 
@@ -76,7 +77,7 @@ def _truthy(value: Any) -> bool:
     """
     Interpret common truthy forms for upgrade_requested:
     True, "true", "yes", "y", "1" → True
-    Everything else → False
+    Everything else → False.
     """
     if value is True:
         return True
@@ -95,6 +96,31 @@ def _norm_category(value: Optional[str]) -> Optional[str]:
     return s.lower()
 
 
+def _safe_context(req) -> Dict[str, Any]:
+    """
+    Normalise req.context into a dict.
+
+    Handles:
+    - None → {}
+    - dict → as-is
+    - Pydantic BaseModel → model_dump()
+    - anything else → {}
+    """
+    raw = getattr(req, "context", None)
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    # Try Pydantic-style model_dump()
+    dump = getattr(raw, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump()
+        except Exception:
+            return {}
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Main rule
 # ---------------------------------------------------------------------------
@@ -106,18 +132,22 @@ def check(req, rulepack: Dict[str, Any], repos) -> Optional[RuleOutcome]:
     if not bool(cfg.get("upgrades_require_approval", True)):
         return None
 
-    ctx = getattr(req, "context", {}) or {}
+    ctx = _safe_context(req)
     upgrade_requested = _truthy(ctx.get("upgrade_requested", False))
     if not upgrade_requested:
         # No upgrade in this tx → no-op
         return None
 
+    tx = getattr(req, "tx", None)
+    if tx is None:
+        # No transaction payload → nothing to enforce against
+        return None
+
     # Optional category scoping
     scope_raw = cfg.get("upgrade_scope_categories") or []
-    scope = { _norm_category(c) for c in scope_raw if _norm_category(c) }
+    scope = {_norm_category(c) for c in scope_raw if _norm_category(c)}
 
-    tx = getattr(req, "tx", None)
-    if scope and tx is not None:
+    if scope:
         tx_cat = _norm_category(getattr(tx, "category_code", None))
         # If scope is defined and tx category is outside scope → skip
         if tx_cat not in scope:
